@@ -6,6 +6,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+Thai:wght@500;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --bg: #E7DFCB;
@@ -91,6 +93,18 @@
   }
   .upload-btn:hover{ background:var(--surface-2); }
   .upload-btn.secondary{ color:var(--ink-soft); }
+  .sync-status{ font-size:11.5px; margin-top:6px; display:inline-flex; align-items:center; gap:5px; }
+  .sync-status.sync-off{ color:var(--ink-soft); }
+  .sync-status.sync-connecting{ color:var(--warn,#B08427); }
+  .sync-status.sync-on{ color:var(--good,#5C7A4E); }
+  .sync-status.sync-error{ color:var(--bad,#A2482E); }
+  .upload-btn.primary{ background:var(--coffee-deep); border-color:var(--coffee-deep); color:#fff; }
+  .upload-btn.primary:hover{ background:#4A3A24; }
+  .publish-hint{
+    font-size:12px; color:var(--ink-soft); line-height:1.6; background:var(--surface-2);
+    border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-bottom:14px;
+  }
+  .publish-hint code{ background:var(--surface); padding:1px 6px; border-radius:5px; font-size:11.5px; }
   .slot-status{ font-size:11.5px; color:var(--ink-soft); }
   .slot-status.done{ color:var(--good); font-weight:600; }
   .upload-status{
@@ -253,6 +267,7 @@
       <h1>KPI Dashboard การจัดส่ง–รับคืน–ย้ายสินค้า</h1>
       <div class="subtitle">ข้อมูลรอบเดือนสิงหาคม 2026 · อ้างอิงจาก Invoice with timestamp / Shipment / Complain</div>
       <div id="printFilterLine" style="display:none; font-size:12px; color:var(--ink-soft); margin-top:6px;"></div>
+      <div id="syncStatus" class="sync-status sync-off">⚪ Cloud Sync: ยังไม่ได้ตั้งค่า (ข้อมูลอยู่ในเครื่องนี้เท่านั้น)</div>
     </div>
     <div class="filters">
       <label>เดือน</label>
@@ -284,8 +299,10 @@
       <span class="slot-status" id="slotStatus-complain">ยังไม่ได้อัปโหลด</span>
     </div>
     <button id="useDefaultBtn" class="upload-btn secondary" style="display:none;">↺ ใช้ข้อมูลตัวอย่าง (ส.ค. 2026)</button>
+    <button id="publishBtn" class="upload-btn primary">💾 ดาวน์โหลดไฟล์อัปเดต (สำหรับอัปขึ้น GitHub)</button>
   </div>
   <div id="uploadStatus" class="upload-status" style="display:none;"></div>
+  <div class="publish-hint">💡 ไฟล์นี้เป็น static file ไม่มีฐานข้อมูลกลาง — การอัปโหลดไฟล์ Excel ด้านบนจะอัปเดตข้อมูล<b>เฉพาะในเบราว์เซอร์ของคุณ</b>เท่านั้น หากต้องการให้ <b>ทุกคนที่เปิดลิงก์ GitHub เห็นข้อมูลชุดเดียวกัน</b> ให้กดปุ่ม "ดาวน์โหลดไฟล์อัปเดต" ด้านบนหลังอัปโหลดข้อมูลเสร็จ แล้วนำไฟล์ที่ได้ไปอัปโหลดทับ <code>index.html</code> เดิมใน repository บน GitHub (Add file → Upload files → Commit) — ทุกคนที่เข้าลิงก์หลังจากนั้นจะเห็นข้อมูลล่าสุดชุดเดียวกัน</div>
 
   <div class="summary-strip" id="summaryStrip"></div>
 
@@ -364,6 +381,96 @@
 </script>
 <script>
 const LOOKUPS = JSON.parse(document.getElementById('lookupsData').textContent);
+</script>
+<script>
+/* ---------------------------------------------------------------------
+   Real-time cloud sync via Firebase Firestore (free tier).
+   Replace the placeholder values below with YOUR OWN Firebase project's
+   config (Firebase console → Project settings → your web app → SDK
+   setup and configuration). Until this is filled in, the dashboard
+   works exactly as before — purely local to each browser, no sync.
+--------------------------------------------------------------------- */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCjNLUnAaG1DHsmX4MshBvrJl2FDf3SYcw",
+  authDomain: "jjmt-dashboard.firebaseapp.com",
+  projectId: "jjmt-dashboard",
+  storageBucket: "jjmt-dashboard.firebasestorage.app",
+  messagingSenderId: "46007345743",
+  appId: "1:46007345743:web:1c95f48e2c122953f3403a",
+  measurementId: "G-JKGSDTWL0L"
+};
+
+const CloudSync = (function(){
+  const COLLECTIONS = { inv: 'invoices', shp: 'trips', comp: 'complaints' };
+  let db = null;
+  let enabled = false;
+
+  function isConfigured(){
+    return FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.apiKey.indexOf('YOUR_') !== 0;
+  }
+
+  function init(){
+    if(!isConfigured()) return { ok:false, reason:'not-configured' };
+    try{
+      if(!firebase.apps || firebase.apps.length === 0){
+        firebase.initializeApp(FIREBASE_CONFIG);
+      }
+      db = firebase.firestore();
+      enabled = true;
+      return { ok:true };
+    } catch(err){
+      return { ok:false, reason:'init-error', error: err };
+    }
+  }
+
+  // Reads every month-document across all 3 collections and returns
+  // { inv:[...], shp:[...], comp:[...] } (concatenated across months).
+  async function fetchAll(){
+    const out = { inv: [], shp: [], comp: [] };
+    for(const key of Object.keys(COLLECTIONS)){
+      const snap = await db.collection(COLLECTIONS[key]).get();
+      snap.forEach(doc=>{
+        const data = doc.data();
+        if(data && Array.isArray(data.records)) out[key] = out[key].concat(data.records);
+      });
+    }
+    return out;
+  }
+
+  // Overwrites one month's document for one data type with the given
+  // (already-merged) full record set for that month.
+  async function writeMonth(type, month, records){
+    if(!enabled) return { ok:false, reason:'not-enabled' };
+    const coll = COLLECTIONS[type];
+    if(!coll || !month) return { ok:false, reason:'bad-args' };
+    try{
+      await db.collection(coll).doc(month).set({
+        records,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      return { ok:true };
+    } catch(err){
+      return { ok:false, reason:'write-error', error: err };
+    }
+  }
+
+  // Subscribes to live changes on all 3 collections; onChange() fires
+  // (debounced) whenever anything changes remotely.
+  function subscribe(onChange){
+    if(!enabled) return function unsubscribeNoop(){};
+    let timer = null;
+    function debouncedChange(){
+      clearTimeout(timer);
+      timer = setTimeout(onChange, 400);
+    }
+    const unsubs = Object.values(COLLECTIONS).map(coll=>
+      db.collection(coll).onSnapshot(debouncedChange, ()=>{ /* ignore snapshot errors here; init() already validated connectivity */ })
+    );
+    return function unsubscribeAll(){ unsubs.forEach(u=>u()); };
+  }
+
+  return { isConfigured, init, fetchAll, writeMonth, subscribe };
+})();
 </script>
 <script>
 /* ---------------------------------------------------------------------
@@ -806,6 +913,12 @@ const UploadPipeline = (function(){
 </script>
 <script>
 const DEFAULT_DATA = JSON.parse(document.getElementById('dataScript').textContent);
+
+// Snapshot of this page's pristine HTML, captured before any DOM mutation
+// (select-option building, render(), etc.) — used later by the "Publish"
+// export so we can bake a fresh dataset into an exact copy of this same
+// file, with nothing else changed.
+const ORIGINAL_HTML = document.documentElement.outerHTML;
 
 const COLORS = {
   good: '#5C7A4E', bad:'#A2482E', warn:'#B08427',
@@ -1396,6 +1509,33 @@ function refreshAfterDataChange(){
   useDefaultBtn.style.display = hasCustomUpload ? 'inline-block' : 'none';
 }
 
+const syncStatusEl = document.getElementById('syncStatus');
+function setSyncStatus(kind, text){
+  syncStatusEl.className = 'sync-status sync-' + kind;
+  const dot = { off:'⚪', connecting:'🟡', on:'🟢', error:'🔴' }[kind] || '⚪';
+  syncStatusEl.textContent = dot + ' ' + text;
+}
+
+const MASTER_ARR = { trip: () => masterShp, invoice: () => masterInv, complain: () => masterComp };
+const MONTH_FIELD_IDX = { trip: 4, invoice: 5, complain: 5 };
+const CLOUD_TYPE = { trip: 'shp', invoice: 'inv', complain: 'comp' };
+
+// Push the complete, already-merged record set for each given month (for one
+// data type) up to Firestore, so every connected browser picks it up.
+async function syncMonthsToCloud(slot, months){
+  if(!CloudSync.isConfigured() || months.length === 0) return;
+  setSyncStatus('connecting', 'กำลังซิงค์ข้อมูลขึ้น cloud…');
+  const arr = MASTER_ARR[slot]();
+  const midx = MONTH_FIELD_IDX[slot];
+  let allOk = true;
+  for(const mk of months){
+    const records = arr.filter(r => r[midx] === mk);
+    const res = await CloudSync.writeMonth(CLOUD_TYPE[slot], mk, records);
+    if(!res.ok) allOk = false;
+  }
+  setSyncStatus(allOk ? 'on' : 'error', allOk ? 'ซิงค์ล่าสุดสำเร็จ — ทุกคนที่เปิดหน้านี้จะเห็นข้อมูลนี้ภายในไม่กี่วินาที' : 'ซิงค์ไม่สำเร็จบางส่วน กรุณาลองใหม่หรือตรวจสอบการตั้งค่า Firebase');
+}
+
 function wireSlot(slot){
   const btn = document.getElementById('uploadBtn-'+slot);
   const input = document.getElementById('uploadInput-'+slot);
@@ -1437,7 +1577,9 @@ function wireSlot(slot){
       statusEl.className = 'slot-status done';
       refreshAfterDataChange();
       const monthTxt = newMonths.length ? (' (เดือน ' + newMonths.map(monthLabel).join(', ') + ')') : '';
-      showUploadStatus('โหลดไฟล์ ' + SLOT_LABEL[slot] + ' สำเร็จ: ' + file.name + monthTxt + ' — อัปเดตเฉพาะรายการที่ตรงกับไฟล์นี้ ข้อมูลเดิมรายการอื่นไม่ถูกแตะต้อง', 'success');
+      const cloudTxt = CloudSync.isConfigured() ? ' — กำลังซิงค์ขึ้น cloud ให้ทุกคนเห็น…' : ' — (Cloud Sync ยังไม่ได้ตั้งค่า ข้อมูลอยู่ในเครื่องนี้เท่านั้น)';
+      showUploadStatus('โหลดไฟล์ ' + SLOT_LABEL[slot] + ' สำเร็จ: ' + file.name + monthTxt + cloudTxt, 'success');
+      await syncMonthsToCloud(slot, newMonths);
     } catch(err){
       showUploadStatus('เกิดข้อผิดพลาดกับไฟล์ ' + SLOT_LABEL[slot] + ': ' + err.message, 'error');
     } finally {
@@ -1447,6 +1589,51 @@ function wireSlot(slot){
   });
 }
 ['trip','invoice','complain'].forEach(wireSlot);
+
+/* ---------------------------------------------------------------------
+   Cloud sync bootstrap: if FIREBASE_CONFIG has been filled in, connect,
+   pull in whatever data is already stored in the cloud (merged on top
+   of the local default sample), then listen for live changes from
+   anyone else using this same dashboard.
+--------------------------------------------------------------------- */
+async function mergeCloudSnapshot(){
+  try{
+    const cloud = await CloudSync.fetchAll();
+    if(cloud.inv.length) masterInv = mergeByKey(masterInv, cloud.inv, r=>String(r[0]));
+    if(cloud.shp.length) masterShp = mergeByKey(masterShp, cloud.shp, r=>String(r[0]));
+    if(cloud.comp.length){
+      masterComp = mergeByKey(masterComp, cloud.comp, r=> r[2] ? ('req:'+r[2]) : ('rec:'+r[0]+'|'+r[1]+'|'+r[3]+'|'+r[4]+'|'+r[5]));
+    }
+    if(cloud.inv.length || cloud.shp.length || cloud.comp.length) hasCustomUpload = true;
+    refreshAfterDataChange();
+    return true;
+  } catch(err){
+    setSyncStatus('error', 'เชื่อมต่อ Cloud Sync ไม่สำเร็จ — กำลังแสดงข้อมูลในเครื่องนี้แทน (' + err.message + ')');
+    return false;
+  }
+}
+
+(async function initCloudSync(){
+  if(!CloudSync.isConfigured()){
+    setSyncStatus('off', 'Cloud Sync: ยังไม่ได้ตั้งค่า (ข้อมูลอยู่ในเครื่องนี้เท่านั้น)');
+    return;
+  }
+  setSyncStatus('connecting', 'กำลังเชื่อมต่อ Cloud Sync…');
+  const initRes = CloudSync.init();
+  if(!initRes.ok){
+    setSyncStatus('error', 'ตั้งค่า Firebase ไม่สำเร็จ — ตรวจสอบ FIREBASE_CONFIG ในไฟล์นี้');
+    return;
+  }
+  const ok = await mergeCloudSnapshot();
+  if(ok){
+    setSyncStatus('on', 'Cloud Sync: เชื่อมต่อแล้ว — ทุกคนที่เปิดลิงก์นี้เห็นข้อมูลชุดเดียวกัน');
+    CloudSync.subscribe(async ()=>{
+      setSyncStatus('connecting', 'มีข้อมูลใหม่จากที่อื่น กำลังอัปเดต…');
+      await mergeCloudSnapshot();
+      setSyncStatus('on', 'Cloud Sync: เชื่อมต่อแล้ว — อัปเดตข้อมูลล่าสุดแล้ว');
+    });
+  }
+})();
 
 useDefaultBtn.addEventListener('click', ()=>{
   masterInv = DEFAULT_DATA.inv.map(r => [r[0], r[1], remapProvIdx(DEFAULT_DATA.provinces, r[2]), r[3], r[4], r[5]]);
@@ -1462,6 +1649,49 @@ useDefaultBtn.addEventListener('click', ()=>{
   state = { region:'', province:'', month:'' };
   refreshAfterDataChange();
   showUploadStatus('กลับไปใช้ข้อมูลตัวอย่างเดือนสิงหาคม 2026 แล้ว', 'success');
+});
+
+/* ---------------------------------------------------------------------
+   Publish: this file has no shared backend/database — uploading Excel
+   files above only updates the data inside the current browser tab.
+   To make everyone who opens the GitHub Pages link see the same
+   updated numbers, this bakes the current merged dataset into a fresh
+   copy of this exact file (same HTML/CSS/JS, only the embedded data
+   changes) for download, ready to overwrite index.html in the repo.
+--------------------------------------------------------------------- */
+function buildPublishHtml(){
+  const dataForExport = {
+    provinces: registry.provinces,
+    regions: registry.regions,
+    provToRegion: registry.provToRegion,
+    services: ['Delivery','Return','Move'],
+    months: computeMonths(),
+    inv: masterInv,
+    shp: masterShp,
+    comp: masterComp,
+  };
+  let json = JSON.stringify(dataForExport);
+  json = json.replace(/<\/script/gi, '<\\/script'); // guard against a literal "</script" inside any text field
+  const re = /(<script id="dataScript" type="application\/json">)([\s\S]*?)(<\/script>)/;
+  if(!re.test(ORIGINAL_HTML)){
+    throw new Error('ไม่พบตำแหน่งฝังข้อมูลในไฟล์ต้นฉบับ');
+  }
+  const newHtml = ORIGINAL_HTML.replace(re, '$1' + json + '$3');
+  return '<!DOCTYPE html>\n' + newHtml;
+}
+
+document.getElementById('publishBtn').addEventListener('click', ()=>{
+  try{
+    const html = buildPublishHtml();
+    const blob = new Blob([html], {type:'text/html;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'index.html';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showUploadStatus('ดาวน์โหลดไฟล์ index.html (พร้อมข้อมูลล่าสุด) สำเร็จ — นำไฟล์นี้ไปอัปโหลดทับใน GitHub repository เพื่อให้ทุกคนเห็นข้อมูลชุดเดียวกัน', 'success');
+  } catch(err){
+    showUploadStatus('สร้างไฟล์สำหรับดาวน์โหลดไม่สำเร็จ: ' + err.message, 'error');
+  }
 });
 </script>
 </body>
