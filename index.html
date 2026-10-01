@@ -687,8 +687,18 @@ const UploadPipeline = (function(){
 
   function colIndexMap(headers){
     const m = {};
-    headers.forEach((h,i)=>{ if(h && m[h]===undefined) m[h]=i; });
+    headers.forEach((h,i)=>{
+      const key = (typeof h === 'string') ? h.trim() : h;
+      if(key && m[key]===undefined) m[key]=i;
+    });
     return m;
+  }
+
+  // Tries several possible header spellings for the same column (in case the
+  // source file uses a slightly different label) and returns the first match.
+  function findColAny(c, candidates){
+    for(const name of candidates){ if(c[name]!==undefined) return c[name]; }
+    return undefined;
   }
 
   function excelToJsDate(serial){ return XlsxReader.excelSerialToDate(serial); }
@@ -798,7 +808,7 @@ const UploadPipeline = (function(){
     for(const n of need){ if(c[n]===undefined) throw new Error('ไฟล์ Invoice (RDD/POD) ขาดคอลัมน์ "'+n+'"'); }
     const recvDateCol = c['วันลูกค้ารับ'], recvTimeCol = c['เวลาลูกค้ารับ'];
     const shipDateCol = c['วันส่งของ']; // actual ship/dispatch date — used to tag which month a record belongs to
-    const statusCol = c['สถานะ'];
+    const statusCol = findColAny(c, ['สถานะ','สถานะบิล','สถานะงาน','สถานะคำสั่งซื้อ','Status','STATUS']);
     const svcIdx = { 'Delivery':0, 'Return':1, 'Move':2 };
     let dateRange = { min:null, max:null };
     const inv = [];
@@ -1360,7 +1370,7 @@ function render(){
     const badgeClass = pct>=0.9?'badge-good':(pct>=0.7?'badge-warn':'badge-bad');
     const barColor = pct>=0.9?COLORS.good:(pct>=0.7?COLORS.warn:COLORS.bad);
     rows.filter(r=>r[4]===false).forEach(r=>{
-      const row = [r[0], SVC_LABEL[svcIdx], DATA.provinces[r[2]], r[7]||'', r[8]||'', r[9]||'', rddHitLabel(r[4])];
+      const row = [r[0], SVC_LABEL[svcIdx], DATA.provinces[r[2]], r[7]||'', r[8]||'', r[9]||'', rddHitLabel(r[4]), r[6]||''];
       notOnTimeExportRows.push(row);
       notOnTimeByService[svcIdx].push(row);
     });
@@ -1408,7 +1418,7 @@ function render(){
     </div>`;
   kpiRow.innerHTML = kpiHtml;
 
-  const NOT_ON_TIME_HEADER = ['เลขที่บิล','ประเภทงาน','จังหวัด','วันนัดส่ง','เวลานัดส่ง','วันลูกค้ารับ','RDDhit'];
+  const NOT_ON_TIME_HEADER = ['เลขที่บิล','ประเภทงาน','จังหวัด','วันนัดส่ง','เวลานัดส่ง','วันลูกค้ารับ','RDDhit','สถานะ'];
   SVC_KEY.forEach((key, svcIdx)=>{
     const btn = document.getElementById('dlNotOnTime-'+svcIdx);
     if(btn){
