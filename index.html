@@ -1525,8 +1525,14 @@ function drawDailySeries(elId, days, values, opts){
     values.forEach((v,i)=>{
       if(v === null || v === undefined) return;
       dots += `<circle cx="${xAt(i)}" cy="${yAt(v)}" r="${n>45?2.2:3.2}" fill="${color}"><title>${esc(tip(days[i], v, i))}</title></circle>`;
+      // Show Drop per Trip values directly on the line, matching the KPI's numeric display.
+      // For long periods, label every few points to keep values legible and avoid overlap.
+      const labelEvery = Math.max(1, Math.ceil(n / 35));
+      if(opts.valueLabels && (i % labelEvery === 0 || i === n-1)){
+        body += `<text x="${xAt(i)}" y="${yAt(v)-8}" text-anchor="middle" font-size="10" font-weight="600" fill="#5F4A2F" font-family="${CHART_FONT}">${dec ? v.toFixed(dec) : fmtNum(v)}</text>`;
+      }
     });
-    body = path + dots;
+    body = path + dots + body;
   } else {
     const bw = Math.max(1, Math.min(opts.maxBarW || Infinity, step*0.72));
     values.forEach((v,i)=>{
@@ -1954,7 +1960,7 @@ function render(){
       : `จุดส่งเฉลี่ยต่อเที่ยวของแต่ละวัน${noDayNote}`;
     drawDailySeries('dailyTripChart', dayList, tripsPerDay, {kind:'bar', color:COLORS.coffee, valueLabels:true, onClick:'showDailyTripDetail', clickKeys:dayList,
       tooltip:(d,v)=> dayTxt(d)+': '+fmtNum(v)+' เที่ยว'});
-    drawDailySeries('dailyDropChart', dayList, dropPerTripDay, {kind:'line', color:COLORS.coffeeDeep, decimals:2,
+    drawDailySeries('dailyDropChart', dayList, dropPerTripDay, {kind:'line', color:COLORS.coffeeDeep, decimals:2, valueLabels:true,
       tooltip:(d,v)=>{ const a = dayAgg.get(d); return dayTxt(d)+': '+v.toFixed(2)+' จุดส่ง/เที่ยว ('+fmtNum(a.drops)+' จุดส่ง / '+fmtNum(a.trips)+' เที่ยว)'; }});
   }
 
